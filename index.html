@@ -1,4 +1,4 @@
-  <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -340,9 +340,15 @@
 
         .metrics {
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 15px;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
             margin-top: 20px;
+        }
+
+        @media (max-width: 768px) {
+            .metrics {
+                grid-template-columns: repeat(2, 1fr);
+            }
         }
 
         .metric {
@@ -469,7 +475,7 @@
     <div class="container">
         <div class="header">
             <h1>🚀 Swyftx Investment Analyzer</h1>
-            <p>Smart buy/sell signals based on 3% growth targets</p>
+            <p>On-demand buy/sell signals based on 3-year historical analysis</p>
         </div>
 
         <div class="controls">
@@ -482,8 +488,9 @@
                     <label for="timeframe">Analysis Timeframe</label>
                     <select id="timeframe">
                         <option value="24h">24 Hours</option>
-                        <option value="7d" selected>7 Days</option>
+                        <option value="7d">7 Days</option>
                         <option value="30d">30 Days</option>
+                        <option value="3y" selected>3 Years (Recommended)</option>
                     </select>
                 </div>
                 <div class="control-item">
@@ -549,27 +556,112 @@
                 );
                 
                 if (!priceResponse.ok) {
-                    throw new Error('Failed to fetch market data');
+                    throw new Error('Failed to fetch current market data');
                 }
                 
                 const priceData = await priceResponse.json();
                 
-                // Transform data for easier use
+                // Calculate dates for 3-year historical analysis
+                const endDate = new Date();
+                const startDate = new Date();
+                startDate.setFullYear(startDate.getFullYear() - 3);
+                
+                const endTimestamp = Math.floor(endDate.getTime() / 1000);
+                const startTimestamp = Math.floor(startDate.getTime() / 1000);
+                
+                // Transform data and fetch historical data for each asset
                 marketData = {};
-                SWYFTX_ASSETS.forEach(asset => {
-                    const data = priceData[asset.id];
-                    if (data) {
-                        marketData[asset.id] = {
-                            ...asset,
-                            price: data.aud,
-                            change24h: data.aud_24h_change || 0,
-                            change7d: data.aud_7d_change || 0,
-                            change30d: data.aud_30d_change || 0,
-                            marketCap: data.aud_market_cap || 0,
-                            volume24h: data.aud_24h_vol || 0
-                        };
+                
+                for (const asset of SWYFTX_ASSETS) {
+                    const currentData = priceData[asset.id];
+                    if (currentData) {
+                        try {
+                            // Fetch 3-year historical data
+                            const historicalResponse = await fetch(
+                                `https://api.coingecko.com/api/v3/coins/${asset.id}/market_chart/range?vs_currency=aud&from=${startTimestamp}&to=${endTimestamp}`
+                            );
+                            
+                            let historicalData = null;
+                            let threeYearChange = 0;
+                            let yearlyGrowthRate = 0;
+                            let volatility = 0;
+                            let trend = 'stable';
+                            
+                            if (historicalResponse.ok) {
+                                historicalData = await historicalResponse.json();
+                                
+                                if (historicalData.prices && historicalData.prices.length > 0) {
+                                    const startPrice = historicalData.prices[0][1];
+                                    const currentPrice = currentData.aud;
+                                    
+                                    // Calculate 3-year total change
+                                    threeYearChange = ((currentPrice - startPrice) / startPrice) * 100;
+                                    
+                                    // Calculate compound annual growth rate (CAGR)
+                                    yearlyGrowthRate = Math.pow(currentPrice / startPrice, 1/3) - 1;
+                                    yearlyGrowthRate = yearlyGrowthRate * 100;
+                                    
+                                    // Calculate volatility (standard deviation of daily returns)
+                                    const dailyReturns = [];
+                                    for (let i = 1; i < historicalData.prices.length; i++) {
+                                        const return_rate = (historicalData.prices[i][1] - historicalData.prices[i-1][1]) / historicalData.prices[i-1][1];
+                                        dailyReturns.push(return_rate * 100);
+                                    }
+                                    
+                                    if (dailyReturns.length > 0) {
+                                        const meanReturn = dailyReturns.reduce((sum, ret) => sum + ret, 0) / dailyReturns.length;
+                                        const variance = dailyReturns.reduce((sum, ret) => sum + Math.pow(ret - meanReturn, 2), 0) / dailyReturns.length;
+                                        volatility = Math.sqrt(variance);
+                                    }
+                                    
+                                    // Determine trend based on recent performance vs historical
+                                    const recentPrices = historicalData.prices.slice(-90); // Last 90 days
+                                    const recentAvg = recentPrices.reduce((sum, price) => sum + price[1], 0) / recentPrices.length;
+                                    const allTimeAvg = historicalData.prices.reduce((sum, price) => sum + price[1], 0) / historicalData.prices.length;
+                                    
+                                    if (recentAvg > allTimeAvg * 1.1) trend = 'bullish';
+                                    else if (recentAvg < allTimeAvg * 0.9) trend = 'bearish';
+                                    else trend = 'stable';
+                                }
+                            }
+                            
+                            // Add small delay to avoid rate limiting
+                            await new Promise(resolve => setTimeout(resolve, 100));
+                            
+                            marketData[asset.id] = {
+                                ...asset,
+                                price: currentData.aud,
+                                change24h: currentData.aud_24h_change || 0,
+                                change7d: currentData.aud_7d_change || 0,
+                                change30d: currentData.aud_30d_change || 0,
+                                threeYearChange,
+                                yearlyGrowthRate,
+                                volatility: Math.round(volatility * 100) / 100,
+                                trend,
+                                marketCap: currentData.aud_market_cap || 0,
+                                volume24h: currentData.aud_24h_vol || 0,
+                                historicalData
+                            };
+                            
+                        } catch (error) {
+                            console.error(`Error fetching historical data for ${asset.name}:`, error);
+                            // Fallback to current data only
+                            marketData[asset.id] = {
+                                ...asset,
+                                price: currentData.aud,
+                                change24h: currentData.aud_24h_change || 0,
+                                change7d: currentData.aud_7d_change || 0,
+                                change30d: currentData.aud_30d_change || 0,
+                                threeYearChange: 0,
+                                yearlyGrowthRate: 0,
+                                volatility: 0,
+                                trend: 'unknown',
+                                marketCap: currentData.aud_market_cap || 0,
+                                volume24h: currentData.aud_24h_vol || 0
+                            };
+                        }
                     }
-                });
+                }
                 
                 return marketData;
             } catch (error) {
@@ -583,75 +675,117 @@
             
             Object.values(data).forEach(asset => {
                 let relevantChange;
+                let timeframeLabel;
+                
                 switch(timeframe) {
                     case '24h':
                         relevantChange = asset.change24h;
+                        timeframeLabel = '24h';
                         break;
                     case '7d':
                         relevantChange = asset.change7d;
+                        timeframeLabel = '7d';
                         break;
                     case '30d':
                         relevantChange = asset.change30d;
+                        timeframeLabel = '30d';
+                        break;
+                    case '3y':
+                        relevantChange = asset.threeYearChange;
+                        timeframeLabel = '3y';
                         break;
                     default:
                         relevantChange = asset.change7d;
+                        timeframeLabel = '7d';
                 }
 
-                // Calculate momentum and volatility indicators
+                // Use 3-year data for comprehensive analysis
                 const momentum = relevantChange;
-                const volatility = Math.abs(relevantChange);
+                const historicalVolatility = asset.volatility || Math.abs(relevantChange) / 10;
+                const yearlyGrowth = asset.yearlyGrowthRate || 0;
+                const trend = asset.trend || 'unknown';
                 
                 // Calculate potential profit
                 const potentialUnits = investmentAmount / asset.price;
                 const targetPrice = asset.price * (1 + targetGrowth / 100);
                 const potentialProfit = (targetPrice - asset.price) * potentialUnits;
                 
-                // Determine signal based on multiple factors
+                // Enhanced signal logic using 3-year historical context
                 let signal = 'hold';
                 let confidence = 50;
                 let reasoning = '';
                 
-                // Buy signals
-                if (momentum < -2 && volatility > 5) {
+                // Strong buy signals based on historical performance
+                if (yearlyGrowth > 15 && trend === 'bullish' && momentum > -10) {
                     signal = 'buy';
-                    confidence = Math.min(90, 60 + volatility);
-                    reasoning = `🚀 Strong dip (-${Math.abs(momentum).toFixed(1)}%) with high volatility suggests potential reversal opportunity`;
-                } else if (momentum > 0 && momentum < targetGrowth && volatility < 10) {
+                    confidence = Math.min(95, 70 + yearlyGrowth);
+                    reasoning = `🚀 Stellar performer! ${yearlyGrowth.toFixed(1)}% annual growth with bullish trend. Historical data suggests strong upward trajectory.`;
+                } 
+                else if (asset.threeYearChange > 100 && momentum < 0 && momentum > -20) {
                     signal = 'buy';
-                    confidence = Math.min(85, 55 + momentum * 2);
-                    reasoning = `⭐ Positive momentum (+${momentum.toFixed(1)}%) below target with low volatility indicates steady growth potential`;
-                } else if (momentum < -0.5 && volatility < 3) {
+                    confidence = Math.min(90, 65 + Math.abs(momentum));
+                    reasoning = `⭐ Historic winner (${asset.threeYearChange.toFixed(0)}% over 3y) experiencing temporary dip (-${Math.abs(momentum).toFixed(1)}%). Excellent entry opportunity.`;
+                }
+                else if (yearlyGrowth > 5 && historicalVolatility < 15 && momentum > -5) {
                     signal = 'buy';
-                    confidence = 65;
-                    reasoning = `🌟 Minor dip with low volatility suggests stable buying opportunity`;
+                    confidence = Math.min(85, 60 + yearlyGrowth * 2);
+                    reasoning = `🌟 Consistent grower with ${yearlyGrowth.toFixed(1)}% yearly returns and low volatility (${historicalVolatility.toFixed(1)}%). Stable investment choice.`;
+                }
+                else if (momentum < -15 && asset.threeYearChange > 50) {
+                    signal = 'buy';
+                    confidence = 80;
+                    reasoning = `💫 Major dip (-${Math.abs(momentum).toFixed(1)}%) in historically strong asset (+${asset.threeYearChange.toFixed(0)}% over 3y). Potential reversal opportunity.`;
                 }
                 
-                // Sell signals
-                else if (momentum >= targetGrowth) {
+                // Sell signals based on historical context
+                else if (momentum >= targetGrowth && yearlyGrowth > 20) {
                     signal = 'sell';
-                    confidence = Math.min(95, 70 + (momentum - targetGrowth) * 3);
-                    reasoning = `💫 Target growth achieved (+${momentum.toFixed(1)}%) - take profits`;
-                } else if (momentum > targetGrowth * 1.5) {
+                    confidence = Math.min(95, 75 + (momentum - targetGrowth) * 2);
+                    reasoning = `💰 Target achieved (+${momentum.toFixed(1)}%) with strong historical performance. Time to secure profits from this cosmic winner.`;
+                }
+                else if (momentum > yearlyGrowth * 2 && yearlyGrowth > 0) {
                     signal = 'sell';
-                    confidence = 90;
-                    reasoning = `🌠 Exceptional growth (+${momentum.toFixed(1)}%) suggests overbought condition`;
-                } else if (momentum < -10) {
+                    confidence = 85;
+                    reasoning = `🌠 Exceptional spike (+${momentum.toFixed(1)}%) well above historical avg (${yearlyGrowth.toFixed(1)}%/year). Take profits before correction.`;
+                }
+                else if (trend === 'bearish' && momentum < -25) {
                     signal = 'sell';
-                    confidence = Math.min(85, 60 + Math.abs(momentum));
-                    reasoning = `⚠️ Severe decline (-${Math.abs(momentum).toFixed(1)}%) suggests stop-loss activation`;
+                    confidence = Math.min(90, 60 + Math.abs(momentum));
+                    reasoning = `⚠️ Bearish trend with severe decline (-${Math.abs(momentum).toFixed(1)}%). Historical pattern suggests continued downtrend.`;
+                }
+                else if (yearlyGrowth < -10 && momentum < -10) {
+                    signal = 'sell';
+                    confidence = 75;
+                    reasoning = `🔴 Consistent underperformer (${yearlyGrowth.toFixed(1)}% yearly) with recent decline. Cut losses and redeploy capital.`;
                 }
                 
-                // Hold signals
+                // Hold signals with historical context
+                else if (Math.abs(momentum) < 5 && yearlyGrowth > 0) {
+                    signal = 'hold';
+                    confidence = 70;
+                    reasoning = `🔭 Stable performance with positive historical trajectory (${yearlyGrowth.toFixed(1)}%/year). Monitor for clear breakout signals.`;
+                }
+                else if (historicalVolatility > 25) {
+                    signal = 'hold';
+                    confidence = 60;
+                    reasoning = `⚡ High volatility asset (${historicalVolatility.toFixed(1)}%). Wait for clearer market direction before major position changes.`;
+                }
                 else {
                     signal = 'hold';
-                    confidence = 50 + Math.random() * 20; // Add some variation
-                    reasoning = `🔭 Current conditions suggest waiting for clearer signals`;
+                    confidence = 55;
+                    reasoning = `🌌 Mixed signals from historical analysis. Current conditions suggest patience for better entry/exit opportunities.`;
                 }
 
-                // Risk assessment
+                // Risk assessment based on historical volatility
                 let riskLevel = 'medium';
-                if (volatility > 15) riskLevel = 'high';
-                else if (volatility < 5) riskLevel = 'low';
+                if (historicalVolatility > 25) riskLevel = 'high';
+                else if (historicalVolatility < 10) riskLevel = 'low';
+
+                // Performance rating based on 3-year data
+                let performanceRating = 'average';
+                if (asset.threeYearChange > 200) performanceRating = 'stellar';
+                else if (asset.threeYearChange > 50) performanceRating = 'strong';
+                else if (asset.threeYearChange < -25) performanceRating = 'poor';
 
                 analysis.push({
                     ...asset,
@@ -659,23 +793,28 @@
                     confidence: Math.round(confidence),
                     reasoning,
                     momentum,
-                    volatility: Math.round(volatility * 100) / 100,
+                    historicalVolatility,
+                    yearlyGrowth,
                     potentialUnits: Math.round(potentialUnits * 100000) / 100000,
                     targetPrice: Math.round(targetPrice * 100) / 100,
                     potentialProfit: Math.round(potentialProfit * 100) / 100,
                     riskLevel,
-                    timeframe,
+                    performanceRating,
+                    timeframe: timeframeLabel,
                     relevantChange
                 });
             });
 
             return analysis.sort((a, b) => {
-                // Sort by signal priority, then by confidence
+                // Sort by signal priority, then by confidence, then by historical performance
                 const signalPriority = { 'buy': 3, 'sell': 2, 'hold': 1 };
                 if (signalPriority[a.signal] !== signalPriority[b.signal]) {
                     return signalPriority[b.signal] - signalPriority[a.signal];
                 }
-                return b.confidence - a.confidence;
+                if (a.confidence !== b.confidence) {
+                    return b.confidence - a.confidence;
+                }
+                return b.threeYearChange - a.threeYearChange;
             });
         }
 
@@ -687,11 +826,13 @@
             const sellSignals = analysis.filter(a => a.signal === 'sell').length;
             const holdSignals = analysis.filter(a => a.signal === 'hold').length;
             const avgConfidence = Math.round(analysis.reduce((sum, a) => sum + a.confidence, 0) / analysis.length);
-            const bestOpportunity = analysis.find(a => a.signal === 'buy') || analysis[0];
+            const avgThreeYearGrowth = Math.round(analysis.reduce((sum, a) => sum + (a.threeYearChange || 0), 0) / analysis.length);
+            const bestHistoricalPerformer = analysis.reduce((best, asset) => 
+                (asset.threeYearChange || 0) > (best.threeYearChange || 0) ? asset : best, analysis[0]);
             
             resultsDiv.innerHTML = `
                 <div class="summary">
-                    <h3>🌌 COSMIC MARKET OVERVIEW</h3>
+                    <h3>🌌 COSMIC MARKET OVERVIEW - 3 YEAR ANALYSIS</h3>
                     <div class="summary-stats">
                         <div class="summary-stat">
                             <div class="summary-stat-value">${buySignals}</div>
@@ -708,6 +849,14 @@
                         <div class="summary-stat">
                             <div class="summary-stat-value">${avgConfidence}%</div>
                             <div class="summary-stat-label">⭐ Avg Confidence</div>
+                        </div>
+                        <div class="summary-stat">
+                            <div class="summary-stat-value">${avgThreeYearGrowth > 0 ? '+' : ''}${avgThreeYearGrowth}%</div>
+                            <div class="summary-stat-label">🌟 3Y Avg Growth</div>
+                        </div>
+                        <div class="summary-stat">
+                            <div class="summary-stat-value">${bestHistoricalPerformer.symbol}</div>
+                            <div class="summary-stat-label">🏆 Top Performer</div>
                         </div>
                     </div>
                 </div>
@@ -737,12 +886,39 @@
                             
                             <div class="metrics">
                                 <div class="metric">
-                                    <div class="metric-label">Potential Units</div>
-                                    <div class="metric-value">${asset.potentialUnits.toLocaleString()}</div>
+                                    <div class="metric-label">3-Year Growth</div>
+                                    <div class="metric-value ${(asset.threeYearChange || 0) >= 0 ? 'positive' : 'negative'}">
+                                        ${(asset.threeYearChange || 0) >= 0 ? '+' : ''}${(asset.threeYearChange || 0).toFixed(1)}%
+                                    </div>
                                 </div>
                                 <div class="metric">
-                                    <div class="metric-label">Target Price</div>
-                                    <div class="metric-value">$${asset.targetPrice.toLocaleString()}</div>
+                                    <div class="metric-label">Annual Growth</div>
+                                    <div class="metric-value ${(asset.yearlyGrowth || 0) >= 0 ? 'positive' : 'negative'}">
+                                        ${(asset.yearlyGrowth || 0) >= 0 ? '+' : ''}${(asset.yearlyGrowth || 0).toFixed(1)}%
+                                    </div>
+                                </div>
+                                <div class="metric">
+                                    <div class="metric-label">Volatility</div>
+                                    <div class="metric-value">${(asset.historicalVolatility || 0).toFixed(1)}%</div>
+                                </div>
+                                <div class="metric">
+                                    <div class="metric-label">Trend</div>
+                                    <div class="metric-value" style="text-transform: uppercase; color: ${
+                                        asset.trend === 'bullish' ? '#90ee90' : 
+                                        asset.trend === 'bearish' ? '#ff6b6b' : '#add8e6'
+                                    };">
+                                        ${asset.trend || 'UNKNOWN'}
+                                    </div>
+                                </div>
+                                <div class="metric">
+                                    <div class="metric-label">Performance</div>
+                                    <div class="metric-value" style="text-transform: uppercase; color: ${
+                                        asset.performanceRating === 'stellar' ? '#90ee90' :
+                                        asset.performanceRating === 'strong' ? '#add8e6' :
+                                        asset.performanceRating === 'poor' ? '#ff6b6b' : '#ffffff'
+                                    };">
+                                        ${asset.performanceRating || 'AVERAGE'}
+                                    </div>
                                 </div>
                                 <div class="metric">
                                     <div class="metric-label">Potential Profit</div>
@@ -751,8 +927,17 @@
                                     </div>
                                 </div>
                                 <div class="metric">
+                                    <div class="metric-label">Target Price</div>
+                                    <div class="metric-value">$${asset.targetPrice.toLocaleString()}</div>
+                                </div>
+                                <div class="metric">
                                     <div class="metric-label">Risk Level</div>
-                                    <div class="metric-value">${asset.riskLevel.toUpperCase()}</div>
+                                    <div class="metric-value" style="color: ${
+                                        asset.riskLevel === 'high' ? '#ff6b6b' :
+                                        asset.riskLevel === 'low' ? '#90ee90' : '#ffa500'
+                                    };">
+                                        ${asset.riskLevel.toUpperCase()}
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -809,44 +994,51 @@
                 loadingDiv.style.display = 'none';
                 renderResults(currentAnalysis);
                 
+                // Show timestamp after successful analysis
+                const lastUpdatedDiv = document.getElementById('lastUpdated');
+                if (lastUpdatedDiv) {
+                    lastUpdatedDiv.innerHTML = '🌟 Analysis completed at: ' + new Date().toLocaleTimeString() + ' on ' + new Date().toLocaleDateString();
+                    lastUpdatedDiv.style.display = 'block';
+                }
+                
             } catch (error) {
                 loadingDiv.style.display = 'none';
                 showError(error.message);
             }
         }
 
-        // Auto-refresh data every 5 minutes
-        setInterval(() => {
-            if (currentAnalysis) {
-                analyzeInvestments();
-            }
-        }, 300000);
-
-        // Initial load
+        // Initial load - removed auto-analysis
         window.addEventListener('load', () => {
             createStars();
-            analyzeInvestments();
+            // User must click "Analyze Investments" to start analysis
         });
 
         // Add some educational tooltips and enhanced UX
         document.addEventListener('DOMContentLoaded', function() {
             createStars();
             
-            // Add last updated timestamp
+            // Add instruction message
+            const instructionDiv = document.createElement('div');
+            instructionDiv.style.textAlign = 'center';
+            instructionDiv.style.padding = '40px';
+            instructionDiv.style.color = '#add8e6';
+            instructionDiv.style.fontSize = '1.2em';
+            instructionDiv.style.fontWeight = '600';
+            instructionDiv.style.fontFamily = "'Space Grotesk', sans-serif";
+            instructionDiv.innerHTML = '🌟 Click "Analyze Investments" to begin your cosmic market analysis journey';
+            document.getElementById('results').appendChild(instructionDiv);
+            
+            // Add last updated timestamp (only shows after analysis)
             const lastUpdated = document.createElement('div');
+            lastUpdated.id = 'lastUpdated';
             lastUpdated.style.textAlign = 'center';
             lastUpdated.style.padding = '25px';
             lastUpdated.style.color = '#add8e6';
             lastUpdated.style.fontSize = '1em';
             lastUpdated.style.fontWeight = '600';
             lastUpdated.style.fontFamily = "'Space Grotesk', sans-serif";
-            lastUpdated.innerHTML = '🌟 Cosmic data streams update every 5 minutes • Last updated: ' + new Date().toLocaleTimeString();
+            lastUpdated.style.display = 'none';
             document.querySelector('.container').appendChild(lastUpdated);
-            
-            // Update timestamp periodically
-            setInterval(() => {
-                lastUpdated.innerHTML = '🌟 Cosmic data streams update every 5 minutes • Last updated: ' + new Date().toLocaleTimeString();
-            }, 60000);
         });
     </script>
 </body>
